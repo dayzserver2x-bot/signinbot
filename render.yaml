@@ -1,0 +1,10 @@
+services:
+  - type: worker
+    name: clockbot
+    env: python
+    plan: free
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python clockbot.py"
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
