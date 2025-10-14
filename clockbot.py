@@ -1,3 +1,9 @@
+import sys
+import types
+# 🩹 Patch for Python 3.13 — prevents discord.py from trying to import the removed 'audioop' module
+if 'audioop' not in sys.modules:
+    sys.modules['audioop'] = types.ModuleType('audioop')
+
 import discord
 from discord import app_commands
 from discord.ext import commands
