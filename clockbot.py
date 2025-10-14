@@ -376,4 +376,28 @@ async def on_app_command_error(interaction: discord.Interaction, error):
         await interaction.response.send_message("❌ You don’t have permission to run this command.", ephemeral=True)
 
 
-bot.run(TOKEN)
+# --- Dummy Web Server for Render ---
+import asyncio
+from aiohttp import web
+
+async def handle(request):
+    return web.Response(text="✅ TimeTracker bot is running!", status=200)
+
+async def run_web_server():
+    port = int(os.getenv("PORT", 8080))
+    app = web.Application()
+    app.router.add_get("/", handle)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    print(f"🌐 Web server started on port {port} (Render health check OK)")
+
+async def main():
+    await asyncio.gather(
+        run_web_server(),
+        bot.start(TOKEN)
+    )
+
+if __name__ == "__main__":
+    asyncio.run(main())
