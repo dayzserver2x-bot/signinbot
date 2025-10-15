@@ -101,7 +101,13 @@ class AdminClockButtons(discord.ui.View):
             return
         await self.cog.weeklyreport_func(interaction)
 
-    # ✅ NEW Purge Button
+    @discord.ui.button(label="✏️ Change Hours", style=discord.ButtonStyle.blurple, custom_id="persistent_admin_changehours_btn")
+    async def change_hours_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_admin(interaction):
+            await interaction.response.send_message("❌ You don’t have permission to use this.", ephemeral=False)
+            return
+        await interaction.response.send_modal(ChangeHoursModal())
+
     @discord.ui.button(label="🧹 Purge Data", style=discord.ButtonStyle.danger, custom_id="persistent_admin_purge_btn")
     async def purge_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not is_admin(interaction):
@@ -110,294 +116,156 @@ class AdminClockButtons(discord.ui.View):
         await self.cog.purge_func(interaction)
 
 
-# --- TimeTracker Cog ---
+# --- Modal: Change Hours ---
+class ChangeHoursModal(discord.ui.Modal, title="✏️ Adjust User Hours"):
+    user_input = discord.ui.TextInput(
+        label="User (mention, username, or ID)",
+        placeholder="e.g. @JohnDoe, JohnDoe#1234, or 123456789012345678",
+        required=True
+    )
+    adjustment = discord.ui.TextInput(
+        label="Adjustment (hours)",
+        placeholder="e.g. +2.5 or -1.0",
+        required=True
+    )
+    reason = discord.ui.TextInput(
+        label="Reason",
+        style=discord.TextStyle.paragraph,
+        placeholder="Why are you adjusting this?",
+        required=False
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        raw_input = self.user_input.value.strip()
+        member = None
+        user_id = None
+
+        # --- Resolve user input ---
+        if raw_input.startswith("<@") and raw_input.endswith(">"):
+            user_id = int(raw_input.strip("<@!>"))
+            member = guild.get_member(user_id)
+        elif raw_input.isdigit():
+            user_id = int(raw_input)
+            member = guild.get_member(user_id)
+        else:
+            member = discord.utils.find(
+                lambda m: str(m) == raw_input or m.name.lower() == raw_input.lower(),
+                guild.members
+            )
+            if member:
+                user_id = member.id
+
+        if not user_id:
+            await interaction.response.send_message("❌ Could not find that user in this server.", ephemeral=True)
+            return
+
+        # --- Parse adjustment hours ---
+        try:
+            delta_hours = float(self.adjustment.value.strip())
+        except ValueError:
+            await interaction.response.send_message("❌ Invalid hour value. Please enter a number like `+2.5` or `-1.0`.", ephemeral=True)
+            return
+
+        username = str(member) if member else f"User {user_id}"
+
+        # --- Find and adjust latest record ---
+        cursor.execute(
+            "SELECT rowid, clock_in, clock_out FROM time_tracking WHERE user_id = ? AND clock_out IS NOT NULL ORDER BY clock_out DESC LIMIT 1",
+            (user_id,)
+        )
+        row = cursor.fetchone()
+
+        now = datetime.now(CENTRAL_TZ)
+
+        if row:
+            rowid, clock_in_str, clock_out_str = row
+            clock_in = datetime.fromisoformat(clock_in_str)
+            clock_out = datetime.fromisoformat(clock_out_str)
+            duration = (clock_out - clock_in).total_seconds() / 3600
+
+            adjusted_duration = max(0, duration + delta_hours)
+            new_clock_out = clock_in + timedelta(hours=adjusted_duration)
+
+            cursor.execute(
+                "UPDATE time_tracking SET clock_out = ? WHERE rowid = ?",
+                (new_clock_out.isoformat(), rowid)
+            )
+            action = "updated last session"
+        else:
+            fake_start = now - timedelta(hours=max(delta_hours, 0))
+            fake_end = now if delta_hours >= 0 else now - timedelta(hours=abs(delta_hours))
+            cursor.execute(
+                "INSERT INTO time_tracking (user_id, username, clock_in, clock_out) VALUES (?, ?, ?, ?)",
+                (user_id, username, fake_start.isoformat(), fake_end.isoformat())
+            )
+            action = "created new adjustment record"
+
+        conn.commit()
+
+        embed = discord.Embed(
+            title="✏️ Hours Adjusted",
+            color=discord.Color.orange(),
+            description=(
+                f"👤 **User:** {username} (`{user_id}`)\n"
+                f"⏱️ **Adjustment:** {delta_hours:+.2f} hours\n"
+                f"📄 **Action:** {action}\n"
+                f"📝 **Reason:** {self.reason.value or 'No reason provided'}\n"
+                f"🕓 **Processed by:** {interaction.user.mention}"
+            )
+        )
+        embed.set_footer(text=f"Time: {now.strftime('%I:%M %p %Z')}")
+        await interaction.response.send_message(embed=embed, ephemeral=False)
+
+
+# --- Main Cog: Time Tracker ---
 class TimeTracker(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    # --- Clock In ---
-    @app_commands.command(name="clockin", description="Clock in to start tracking time.")
-    async def clockin(self, interaction: discord.Interaction):
-        await self.clockin_func(interaction)
+    # (keep your existing functions here – clockin_func, clockout_func, status_func, etc.)
 
-    async def clockin_func(self, interaction: discord.Interaction):
-        user_id = interaction.user.id
-        username = str(interaction.user)
-
-        cursor.execute("SELECT * FROM time_tracking WHERE user_id = ? AND clock_out IS NULL", (user_id,))
-        if cursor.fetchone():
-            await interaction.response.send_message("❌ You're already clocked in!", delete_after=AUTO_DELETE_TIME)
-            return
-
-        clock_in_time = datetime.now(CENTRAL_TZ).isoformat()
-        cursor.execute("INSERT INTO time_tracking (user_id, username, clock_in, clock_out) VALUES (?, ?, ?, NULL)",
-                       (user_id, username, clock_in_time))
-        conn.commit()
-
-        await interaction.response.send_message(
-            f"✅ Clocked in at {datetime.now(CENTRAL_TZ).strftime('%I:%M %p %Z')}.",
-            delete_after=AUTO_DELETE_TIME
-        )
-
-    # --- Clock Out ---
-    @app_commands.command(name="clockout", description="Clock out and stop tracking time.")
-    async def clockout(self, interaction: discord.Interaction):
-        await self.clockout_func(interaction)
-
-    async def clockout_func(self, interaction: discord.Interaction):
-        user_id = interaction.user.id
-        cursor.execute("SELECT clock_in FROM time_tracking WHERE user_id = ? AND clock_out IS NULL", (user_id,))
-        row = cursor.fetchone()
-
-        if not row:
-            await interaction.response.send_message("❌ You're not clocked in.", delete_after=AUTO_DELETE_TIME)
-            return
-
-        clock_in_time = datetime.fromisoformat(row[0])
-        clock_out_time = datetime.now(CENTRAL_TZ)
-        cursor.execute("UPDATE time_tracking SET clock_out = ? WHERE user_id = ? AND clock_out IS NULL",
-                       (clock_out_time.isoformat(), user_id))
-        conn.commit()
-
-        total_time = clock_out_time - clock_in_time
-        hours = total_time.total_seconds() / 3600
-        await interaction.response.send_message(
-            f"🕒 Clocked out at {clock_out_time.strftime('%I:%M %p %Z')}. You worked for {hours:.2f} hours.",
-            delete_after=AUTO_DELETE_TIME
-        )
-
-    # --- Status ---
-    @app_commands.command(name="status", description="Check your current clock-in status.")
-    async def status_slash(self, interaction: discord.Interaction):
-        await self.status_func(interaction)
-
-    async def status_func(self, interaction: discord.Interaction):
-        user_id = interaction.user.id
-        cursor.execute("SELECT clock_in FROM time_tracking WHERE user_id = ? AND clock_out IS NULL", (user_id,))
-        row = cursor.fetchone()
-
-        if row:
-            clock_in_time = datetime.fromisoformat(row[0]).astimezone(CENTRAL_TZ)
-            await interaction.response.send_message(f"✅ You are clocked in since {clock_in_time.strftime('%I:%M %p %Z')}.", delete_after=AUTO_DELETE_TIME)
-        else:
-            cursor.execute("SELECT clock_out FROM time_tracking WHERE user_id = ? ORDER BY clock_out DESC LIMIT 1", (user_id,))
-            last = cursor.fetchone()
-            if last:
-                last_out = datetime.fromisoformat(last[0]).astimezone(CENTRAL_TZ)
-                await interaction.response.send_message(f"❌ You are not clocked in. Last clock-out was at {last_out.strftime('%I:%M %p %Z')}.", delete_after=AUTO_DELETE_TIME)
-            else:
-                await interaction.response.send_message("❌ You have no work sessions recorded yet.", delete_after=AUTO_DELETE_TIME)
-
-    # --- My Hours ---
-    @app_commands.command(name="myhours", description="Check your total recorded work hours.")
-    async def myhours(self, interaction: discord.Interaction):
-        await self.myhours_func(interaction)
-
-    async def myhours_func(self, interaction: discord.Interaction):
-        user_id = interaction.user.id
-        username = str(interaction.user)
-        cursor.execute("SELECT clock_in, clock_out FROM time_tracking WHERE user_id = ? AND clock_out IS NOT NULL", (user_id,))
-        records = cursor.fetchall()
-
-        if not records:
-            await interaction.response.send_message("❌ You don't have any completed work sessions yet.", delete_after=AUTO_DELETE_TIME)
-            return
-
-        total_hours = 0
-        for clock_in, clock_out in records:
-            try:
-                start = datetime.fromisoformat(clock_in).astimezone(CENTRAL_TZ)
-                end = datetime.fromisoformat(clock_out).astimezone(CENTRAL_TZ)
-                total_hours += (end - start).total_seconds() / 3600
-            except Exception:
-                continue
-
-        total_pay = total_hours * HOURLY_PAY
-        embed = discord.Embed(
-            title=f"🕒 Work Summary for {username}",
-            color=discord.Color.teal(),
-            description=f"**Total Hours Worked:** {total_hours:.2f}h\n**Total Sessions:** {len(records)}\n**💰 Estimated Pay:** ${total_pay:,.2f}"
-        )
-        embed.set_footer(text=f"Hourly Rate: ${HOURLY_PAY}/hr • Times shown in CT")
-        await interaction.response.send_message(embed=embed)
-
-    # --- Admin: Clock Status ---
-    async def clockstatus_func(self, interaction: discord.Interaction):
-        cursor.execute("SELECT username, clock_in FROM time_tracking WHERE clock_out IS NULL")
-        rows = cursor.fetchall()
-        if not rows:
-            await interaction.response.send_message("✅ No one is currently clocked in.", delete_after=ADMIN_AUTO_DELETE_TIME)
-            return
-        embed = discord.Embed(title="Currently Clocked In", color=discord.Color.green())
-        for username, clock_in in rows:
-            t = datetime.fromisoformat(clock_in).astimezone(CENTRAL_TZ)
-            embed.add_field(name=username, value=f"Since {t.strftime('%I:%M %p %Z')}", inline=False)
-        await interaction.response.send_message(embed=embed, delete_after=ADMIN_AUTO_DELETE_TIME)
-
-    # --- Admin: All Hours ---
-    async def allhours_func(self, interaction: discord.Interaction, export: bool = False):
-        cursor.execute("SELECT username, clock_in, clock_out FROM time_tracking WHERE clock_out IS NOT NULL")
-        rows = cursor.fetchall()
-        if not rows:
-            await interaction.response.send_message("❌ No completed work sessions found.", ephemeral=False)
-            return
-        totals = {}
-        for username, clock_in, clock_out in rows:
-            try:
-                start = datetime.fromisoformat(clock_in).astimezone(CENTRAL_TZ)
-                end = datetime.fromisoformat(clock_out).astimezone(CENTRAL_TZ)
-                hours = (end - start).total_seconds() / 3600
-                totals[username] = totals.get(username, 0) + hours
-            except Exception:
-                continue
-        sorted_totals = sorted(totals.items(), key=lambda x: x[1], reverse=True)
-        desc = "\n".join([f"**{u}** — {h:.2f}h" for u, h in sorted_totals])
-        embed = discord.Embed(title="🕒 Total Hours Worked (All Users)", description=desc[:4000], color=discord.Color.orange())
-        embed.set_footer(text="All times in CT")
-        await interaction.response.send_message(embed=embed, delete_after=ADMIN_AUTO_DELETE_TIME)
-
-    # --- Admin: 7-Day Report ---
-    async def weeklyreport_func(self, interaction: discord.Interaction):
-        now = datetime.now(CENTRAL_TZ)
-        start = now - timedelta(days=7)
-        cursor.execute("SELECT username, clock_in, clock_out FROM time_tracking WHERE clock_out IS NOT NULL")
-        rows = cursor.fetchall()
-        totals = {}
-        for username, clock_in, clock_out in rows:
-            try:
-                ci = datetime.fromisoformat(clock_in).astimezone(CENTRAL_TZ)
-                co = datetime.fromisoformat(clock_out).astimezone(CENTRAL_TZ)
-                if co >= start:
-                    hours = (co - ci).total_seconds() / 3600
-                    totals[username] = totals.get(username, 0) + hours
-            except Exception:
-                continue
-        if not totals:
-            await interaction.response.send_message("❌ No work sessions in the past 7 days.", ephemeral=False)
-            return
-        desc_lines = []
-        total_pay = 0
-        for user, h in sorted(totals.items(), key=lambda x: x[1], reverse=True):
-            pay = h * HOURLY_PAY
-            total_pay += pay
-            desc_lines.append(f"**{user}** — {h:.2f}h • 💰 ${pay:,.2f}")
-        embed = discord.Embed(title="📅 7-Day Work Summary (Admin)", description="\n".join(desc_lines), color=discord.Color.gold())
-        embed.add_field(name="🏦 Total Payroll", value=f"${total_pay:,.2f}", inline=False)
-        embed.set_footer(text=f"Hourly Rate: ${HOURLY_PAY}/hr • Period: {start.strftime('%b %d')} → {now.strftime('%b %d')} CT")
-        await interaction.response.send_message(embed=embed, delete_after=ADMIN_AUTO_DELETE_TIME)
-
-    # ✅ --- Purge Function ---
-    async def purge_func(self, interaction: discord.Interaction):
-        embed = discord.Embed(
-            title="🧹 Purge Time Data",
-            description="This action **cannot be undone.**\n\nChoose:\n• 🚮 **Purge All** — delete all data\n• ❌ **Cancel** — abort",
-            color=discord.Color.red()
-        )
-        embed.set_footer(text=f"Requested by {interaction.user} • {datetime.now(CENTRAL_TZ).strftime('%I:%M %p %Z')}")
-        await interaction.response.send_message(embed=embed, view=PurgeConfirmView(), ephemeral=False)
-
-
-# --- Purge Confirmation View ---
-class PurgeConfirmView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=60)
-
-    @discord.ui.button(label="🚮 Purge All", style=discord.ButtonStyle.danger)
-    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
-        cursor.execute("DELETE FROM time_tracking")
-        conn.commit()
-        await interaction.response.edit_message(
-            embed=discord.Embed(
-                title="✅ Database Cleared",
-                description=f"All time-tracking records have been deleted.\n👤 **Action by:** {interaction.user.mention}",
-                color=discord.Color.green()
-            ),
-            view=None
-        )
-        await interaction.message.delete(delay=ADMIN_AUTO_DELETE_TIME)
-
-    @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.secondary)
-    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.edit_message(
-            embed=discord.Embed(title="❌ Purge Cancelled", description="No data was deleted.", color=discord.Color.greyple()),
-            view=None
-        )
-        await interaction.message.delete(delay=ADMIN_AUTO_DELETE_TIME)
-
-
-# --- Sync Command ---
-@bot.command()
-@commands.has_permissions(administrator=True)
-async def sync(ctx):
-    await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
-    await ctx.send("✅ Slash commands synced.")
-
-
-# --- Startup ---
-async def setup():
-    await bot.add_cog(TimeTracker(bot), guild=discord.Object(id=GUILD_ID))
-    print("✅ Cog loaded")
-    synced = await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
-    print(f"✅ Synced {len(synced)} commands")
-
-
+# --- Creator Info Embed ---
 @bot.event
 async def on_ready():
-    await setup()
-    cog = bot.get_cog("TimeTracker")
-    bot.add_view(ClockButtons(cog))
-    bot.add_view(AdminClockButtons(cog))
-    print(f"🤖 Logged in as {bot.user}")
-    print("🕒 All times shown in Central Time (CT — auto-adjusts for CDT/CST)")
+    print(f"✅ Logged in as {bot.user}")
+    await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
 
-    channel = bot.get_channel(BUTTON_CHANNEL_ID)
-    if channel:
-        creator_embed = discord.Embed(
-            title="👨‍💻 TimeTracker Bot",
-            description=(
-                "Something I created to help track Yall!!! 😘😘😘.\n\n"
-                "**Created by:** <@691108551258800128>\n"
-                "📦 **Version:** 1.0.0\n"
-                "🕓 **Timezone:** Central Time (auto-adjusts for CDT/CST)\n"
-                "💾 **Database:** SQLite (`clockbot.db`)"
-            ),
-            color=discord.Color.blurple()
-        )
-        creator_embed.set_footer(text="© 2025 TimeTracker Bot • Developed with ❤️ using discord.py")
+    guild = bot.get_guild(GUILD_ID)
+    channel = guild.get_channel(BUTTON_CHANNEL_ID)
+    if not channel:
+        print("❌ Button channel not found!")
+        return
 
-        await channel.send(embed=creator_embed)
-        await channel.send("👋 **Time Tracking Panel**", view=ClockButtons(cog))
-        await channel.send("🛠️ **Admin Control Panel**", view=AdminClockButtons(cog))
+    # Creator Info Embed
+    creator_embed = discord.Embed(
+        title="🧠 Creator Info",
+        description="Created by **Rebeldude86** | Version 1.5 | © 2025",
+        color=discord.Color.blue()
+    )
+    creator_embed.set_footer(text="!!2x custom bot for the traders! ❤️")
 
-
-@bot.tree.error
-async def on_app_command_error(interaction: discord.Interaction, error):
-    if isinstance(error, app_commands.CheckFailure):
-        await interaction.response.send_message("❌ You don’t have permission to run this command.", ephemeral=True)
-
-
-# --- Dummy Web Server for Render ---
-import asyncio
-from aiohttp import web
-
-async def handle(request):
-    return web.Response(text="✅ TimeTracker bot is running!", status=200)
-
-async def run_web_server():
-    port = int(os.getenv("PORT", 8080))
-    app = web.Application()
-    app.router.add_get("/", handle)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-    print(f"🌐 Web server started on port {port} (Render health check OK)")
-
-async def main():
-    await asyncio.gather(
-        run_web_server(),
-        bot.start(TOKEN)
+    # User Panel
+    user_embed = discord.Embed(
+        title="⏰ Employee Time Clock",
+        description="Use the buttons below to clock in/out and check your hours.",
+        color=discord.Color.green()
     )
 
-if __name__ == "__main__":
-    asyncio.run(main())
+    # Admin Panel
+    admin_embed = discord.Embed(
+        title="⚙️ Admin Panel",
+        description="Manage employee hours and data.",
+        color=discord.Color.gold()
+    )
+
+    # Send or update panels
+    await channel.purge(limit=5)
+    await channel.send(embed=creator_embed)
+    await channel.send(embed=user_embed, view=ClockButtons(bot))
+    await channel.send(embed=admin_embed, view=AdminClockButtons(bot))
+
+
+# --- Run the Bot ---
+bot.add_cog(TimeTracker(bot))
+bot.run(TOKEN)
