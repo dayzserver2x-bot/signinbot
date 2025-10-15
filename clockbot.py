@@ -240,7 +240,7 @@ async def on_ready():
         description="Created by **Rebeldude86** | Version 1.2 | © 2025",
         color=discord.Color.blue()
     )
-    creator_embed.set_footer(text="Thank you for using ClockBot! ❤️")
+    creator_embed.set_footer(text="! ❤️")
 
     user_embed = discord.Embed(
         title="⏰ Employee Time Clock",
