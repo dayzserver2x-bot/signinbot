@@ -141,7 +141,6 @@ class ChangeHoursModal(discord.ui.Modal, title="✏️ Adjust User Hours"):
         member = None
         user_id = None
 
-        # --- Resolve user input ---
         if raw_input.startswith("<@") and raw_input.endswith(">"):
             user_id = int(raw_input.strip("<@!>"))
             member = guild.get_member(user_id)
@@ -160,7 +159,6 @@ class ChangeHoursModal(discord.ui.Modal, title="✏️ Adjust User Hours"):
             await interaction.response.send_message("❌ Could not find that user in this server.", ephemeral=True)
             return
 
-        # --- Parse adjustment hours ---
         try:
             delta_hours = float(self.adjustment.value.strip())
         except ValueError:
@@ -169,7 +167,6 @@ class ChangeHoursModal(discord.ui.Modal, title="✏️ Adjust User Hours"):
 
         username = str(member) if member else f"User {user_id}"
 
-        # --- Find and adjust latest record ---
         cursor.execute(
             "SELECT rowid, clock_in, clock_out FROM time_tracking WHERE user_id = ? AND clock_out IS NOT NULL ORDER BY clock_out DESC LIMIT 1",
             (user_id,)
@@ -223,7 +220,8 @@ class TimeTracker(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    # (keep your existing functions here – clockin_func, clockout_func, status_func, etc.)
+    # (your original functions like clockin_func, clockout_func, etc. stay here — unchanged)
+
 
 # --- Creator Info Embed ---
 @bot.event
@@ -237,34 +235,45 @@ async def on_ready():
         print("❌ Button channel not found!")
         return
 
-    # Creator Info Embed
     creator_embed = discord.Embed(
         title="🧠 Creator Info",
-        description="Created by **Rebeldude86** | Version 1.5 | © 2025",
+        description="Created by **Rebeldude86** | Version 1.2 | © 2025",
         color=discord.Color.blue()
     )
-    creator_embed.set_footer(text="!!2x custom bot for the traders! ❤️")
+    creator_embed.set_footer(text="Thank you for using ClockBot! ❤️")
 
-    # User Panel
     user_embed = discord.Embed(
         title="⏰ Employee Time Clock",
         description="Use the buttons below to clock in/out and check your hours.",
         color=discord.Color.green()
     )
 
-    # Admin Panel
     admin_embed = discord.Embed(
         title="⚙️ Admin Panel",
         description="Manage employee hours and data.",
         color=discord.Color.gold()
     )
 
-    # Send or update panels
     await channel.purge(limit=5)
-    await channel.send(embed=creator_embed)
-    await channel.send(embed=user_embed, view=ClockButtons(bot))
-    await channel.send(embed=admin_embed, view=AdminClockButtons(bot))
 
+    cog = bot.get_cog("TimeTracker")  # ✅ FIX: use cog instance
+    await channel.send(embed=creator_embed)
+    await channel.send(embed=user_embed, view=ClockButtons(cog))  # ✅ FIXED
+    await channel.send(embed=admin_embed, view=AdminClockButtons(cog))  # ✅ FIXED
+
+import threading
+import http.server
+import socketserver
+import os
+
+def keep_alive():
+    port = int(os.environ.get("PORT", 8080))
+    handler = http.server.SimpleHTTPRequestHandler
+    with socketserver.TCPServer(("", port), handler) as httpd:
+        print(f"🌐 Dummy server running on port {port}")
+        httpd.serve_forever()
+
+threading.Thread(target=keep_alive, daemon=True).start()
 
 # --- Run the Bot ---
 bot.add_cog(TimeTracker(bot))
