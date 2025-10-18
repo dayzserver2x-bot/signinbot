@@ -219,7 +219,7 @@ class TimeTracker(commands.Cog):
             description=f"**Total Hours Worked:** {total_hours:.2f}h\n**Total Sessions:** {len(records)}\n**💰 Estimated Pay:** ${total_pay:,.2f}"
         )
         embed.set_footer(text=f"Hourly Rate: ${HOURLY_PAY}/hr • Times shown in CT")
-        await interaction.response.send_message(embed=embed)
+        await interaction.response.send_message(embed=embed, delete_after=AUTO_DELETE_TIME)
 
     # --- Admin: Clock Status ---
     async def clockstatus_func(self, interaction: discord.Interaction):
@@ -357,7 +357,7 @@ async def on_ready():
             description=(
                 "Something I created to help track Yall!!! 😘😘😘.\n\n"
                 "**Created by:** <@691108551258800128>\n"
-                "📦 **Version:** 1.2.0\n"
+                "📦 **Version:** 1.0.0\n"
                 "🕓 **Timezone:** Central Time (auto-adjusts for CDT/CST)\n"
                 "💾 **Database:** SQLite (`clockbot.db`)"
             ),
@@ -366,8 +366,8 @@ async def on_ready():
         creator_embed.set_footer(text="© 2025 TimeTracker Bot • Developed with ❤️ using discord.py")
 
         await channel.send(embed=creator_embed)
-        await channel.send("👋 **Time Tracking Panel**", view=ClockButtons(cog), delete_after=60)
-        await channel.send("🛠️ **Admin Control Panel**", view=AdminClockButtons(cog), delete_after=60)
+        await channel.send("👋 **Time Tracking Panel**", view=ClockButtons(cog))
+        await channel.send("🛠️ **Admin Control Panel**", view=AdminClockButtons(cog))
 
 
 @bot.tree.error
