@@ -26,6 +26,16 @@ AUTO_DELETE_TIME = 60
 ADMIN_AUTO_DELETE_TIME = 60
 HOURLY_PAY = 2500
 
+# --- Utility: Auto-deleting Responses ---
+async def send_temp_message(interaction: discord.Interaction, content=None, embed=None, ephemeral=False, admin=False):
+    """Unified message sender that auto-deletes after AUTO_DELETE_TIME or ADMIN_AUTO_DELETE_TIME."""
+    delete_time = ADMIN_AUTO_DELETE_TIME if admin else AUTO_DELETE_TIME
+    if not interaction.response.is_done():
+        await interaction.response.send_message(content=content, embed=embed, ephemeral=ephemeral, delete_after=delete_time)
+    else:
+        await interaction.followup.send(content=content, embed=embed, ephemeral=ephemeral, delete_after=delete_time)
+
+
 # --- Database Setup ---
 conn = sqlite3.connect("clockbot.db")
 cursor = conn.cursor()
@@ -83,29 +93,28 @@ class AdminClockButtons(discord.ui.View):
     @discord.ui.button(label="👥 Clock Status", style=discord.ButtonStyle.primary, custom_id="persistent_admin_status_btn")
     async def clock_status_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not is_admin(interaction):
-            await interaction.response.send_message("❌ You don’t have permission to use this.", ephemeral=False)
+            await send_temp_message(interaction, content="❌ You don’t have permission to use this.", admin=True)
             return
         await self.cog.clockstatus_func(interaction)
 
     @discord.ui.button(label="🧾 All Hours", style=discord.ButtonStyle.success, custom_id="persistent_admin_allhours_btn")
     async def all_hours_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not is_admin(interaction):
-            await interaction.response.send_message("❌ You don’t have permission to use this.", ephemeral=False)
+            await send_temp_message(interaction, content="❌ You don’t have permission to use this.", admin=True)
             return
         await self.cog.allhours_func(interaction, export=False)
 
     @discord.ui.button(label="📅 7-Day Report", style=discord.ButtonStyle.secondary, custom_id="persistent_admin_weekly_btn")
     async def weekly_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not is_admin(interaction):
-            await interaction.response.send_message("❌ You don’t have permission to use this.", ephemeral=False)
+            await send_temp_message(interaction, content="❌ You don’t have permission to use this.", admin=True)
             return
         await self.cog.weeklyreport_func(interaction)
 
-    # ✅ NEW Purge Button
     @discord.ui.button(label="🧹 Purge Data", style=discord.ButtonStyle.danger, custom_id="persistent_admin_purge_btn")
     async def purge_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not is_admin(interaction):
-            await interaction.response.send_message("❌ You don’t have permission to use this.", ephemeral=False)
+            await send_temp_message(interaction, content="❌ You don’t have permission to use this.", admin=True)
             return
         await self.cog.purge_func(interaction)
 
@@ -115,7 +124,6 @@ class TimeTracker(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    # --- Clock In ---
     @app_commands.command(name="clockin", description="Clock in to start tracking time.")
     async def clockin(self, interaction: discord.Interaction):
         await self.clockin_func(interaction)
@@ -126,7 +134,7 @@ class TimeTracker(commands.Cog):
 
         cursor.execute("SELECT * FROM time_tracking WHERE user_id = ? AND clock_out IS NULL", (user_id,))
         if cursor.fetchone():
-            await interaction.response.send_message("❌ You're already clocked in!", delete_after=AUTO_DELETE_TIME)
+            await send_temp_message(interaction, content="❌ You're already clocked in!")
             return
 
         clock_in_time = datetime.now(CENTRAL_TZ).isoformat()
@@ -134,12 +142,11 @@ class TimeTracker(commands.Cog):
                        (user_id, username, clock_in_time))
         conn.commit()
 
-        await interaction.response.send_message(
-            f"✅ Clocked in at {datetime.now(CENTRAL_TZ).strftime('%I:%M %p %Z')}.",
-            delete_after=AUTO_DELETE_TIME
+        await send_temp_message(
+            interaction,
+            content=f"✅ Clocked in at {datetime.now(CENTRAL_TZ).strftime('%I:%M %p %Z')}."
         )
 
-    # --- Clock Out ---
     @app_commands.command(name="clockout", description="Clock out and stop tracking time.")
     async def clockout(self, interaction: discord.Interaction):
         await self.clockout_func(interaction)
@@ -150,7 +157,7 @@ class TimeTracker(commands.Cog):
         row = cursor.fetchone()
 
         if not row:
-            await interaction.response.send_message("❌ You're not clocked in.", delete_after=AUTO_DELETE_TIME)
+            await send_temp_message(interaction, content="❌ You're not clocked in.")
             return
 
         clock_in_time = datetime.fromisoformat(row[0])
@@ -161,12 +168,11 @@ class TimeTracker(commands.Cog):
 
         total_time = clock_out_time - clock_in_time
         hours = total_time.total_seconds() / 3600
-        await interaction.response.send_message(
-            f"🕒 Clocked out at {clock_out_time.strftime('%I:%M %p %Z')}. You worked for {hours:.2f} hours.",
-            delete_after=AUTO_DELETE_TIME
+        await send_temp_message(
+            interaction,
+            content=f"🕒 Clocked out at {clock_out_time.strftime('%I:%M %p %Z')}. You worked for {hours:.2f} hours."
         )
 
-    # --- Status ---
     @app_commands.command(name="status", description="Check your current clock-in status.")
     async def status_slash(self, interaction: discord.Interaction):
         await self.status_func(interaction)
@@ -178,17 +184,16 @@ class TimeTracker(commands.Cog):
 
         if row:
             clock_in_time = datetime.fromisoformat(row[0]).astimezone(CENTRAL_TZ)
-            await interaction.response.send_message(f"✅ You are clocked in since {clock_in_time.strftime('%I:%M %p %Z')}.", delete_after=AUTO_DELETE_TIME)
+            await send_temp_message(interaction, content=f"✅ You are clocked in since {clock_in_time.strftime('%I:%M %p %Z')}.")
         else:
             cursor.execute("SELECT clock_out FROM time_tracking WHERE user_id = ? ORDER BY clock_out DESC LIMIT 1", (user_id,))
             last = cursor.fetchone()
             if last:
                 last_out = datetime.fromisoformat(last[0]).astimezone(CENTRAL_TZ)
-                await interaction.response.send_message(f"❌ You are not clocked in. Last clock-out was at {last_out.strftime('%I:%M %p %Z')}.", delete_after=AUTO_DELETE_TIME)
+                await send_temp_message(interaction, content=f"❌ You are not clocked in. Last clock-out was at {last_out.strftime('%I:%M %p %Z')}.")
             else:
-                await interaction.response.send_message("❌ You have no work sessions recorded yet.", delete_after=AUTO_DELETE_TIME)
+                await send_temp_message(interaction, content="❌ You have no work sessions recorded yet.")
 
-    # --- My Hours ---
     @app_commands.command(name="myhours", description="Check your total recorded work hours.")
     async def myhours(self, interaction: discord.Interaction):
         await self.myhours_func(interaction)
@@ -200,7 +205,7 @@ class TimeTracker(commands.Cog):
         records = cursor.fetchall()
 
         if not records:
-            await interaction.response.send_message("❌ You don't have any completed work sessions yet.", delete_after=AUTO_DELETE_TIME)
+            await send_temp_message(interaction, content="❌ You don't have any completed work sessions yet.")
             return
 
         total_hours = 0
@@ -219,27 +224,26 @@ class TimeTracker(commands.Cog):
             description=f"**Total Hours Worked:** {total_hours:.2f}h\n**Total Sessions:** {len(records)}\n**💰 Estimated Pay:** ${total_pay:,.2f}"
         )
         embed.set_footer(text=f"Hourly Rate: ${HOURLY_PAY}/hr • Times shown in CT")
-        await interaction.response.send_message(embed=embed, delete_after=AUTO_DELETE_TIME)
+        await send_temp_message(interaction, embed=embed)
 
-    # --- Admin: Clock Status ---
+    # --- Admin functions ---
     async def clockstatus_func(self, interaction: discord.Interaction):
         cursor.execute("SELECT username, clock_in FROM time_tracking WHERE clock_out IS NULL")
         rows = cursor.fetchall()
         if not rows:
-            await interaction.response.send_message("✅ No one is currently clocked in.", delete_after=ADMIN_AUTO_DELETE_TIME)
+            await send_temp_message(interaction, content="✅ No one is currently clocked in.", admin=True)
             return
         embed = discord.Embed(title="Currently Clocked In", color=discord.Color.green())
         for username, clock_in in rows:
             t = datetime.fromisoformat(clock_in).astimezone(CENTRAL_TZ)
             embed.add_field(name=username, value=f"Since {t.strftime('%I:%M %p %Z')}", inline=False)
-        await interaction.response.send_message(embed=embed, delete_after=ADMIN_AUTO_DELETE_TIME)
+        await send_temp_message(interaction, embed=embed, admin=True)
 
-    # --- Admin: All Hours ---
     async def allhours_func(self, interaction: discord.Interaction, export: bool = False):
         cursor.execute("SELECT username, clock_in, clock_out FROM time_tracking WHERE clock_out IS NOT NULL")
         rows = cursor.fetchall()
         if not rows:
-            await interaction.response.send_message("❌ No completed work sessions found.", ephemeral=False)
+            await send_temp_message(interaction, content="❌ No completed work sessions found.", admin=True)
             return
         totals = {}
         for username, clock_in, clock_out in rows:
@@ -254,9 +258,8 @@ class TimeTracker(commands.Cog):
         desc = "\n".join([f"**{u}** — {h:.2f}h" for u, h in sorted_totals])
         embed = discord.Embed(title="🕒 Total Hours Worked (All Users)", description=desc[:4000], color=discord.Color.orange())
         embed.set_footer(text="All times in CT")
-        await interaction.response.send_message(embed=embed, delete_after=ADMIN_AUTO_DELETE_TIME)
+        await send_temp_message(interaction, embed=embed, admin=True)
 
-    # --- Admin: 7-Day Report ---
     async def weeklyreport_func(self, interaction: discord.Interaction):
         now = datetime.now(CENTRAL_TZ)
         start = now - timedelta(days=7)
@@ -273,7 +276,7 @@ class TimeTracker(commands.Cog):
             except Exception:
                 continue
         if not totals:
-            await interaction.response.send_message("❌ No work sessions in the past 7 days.", ephemeral=False)
+            await send_temp_message(interaction, content="❌ No work sessions in the past 7 days.", admin=True)
             return
         desc_lines = []
         total_pay = 0
@@ -284,9 +287,8 @@ class TimeTracker(commands.Cog):
         embed = discord.Embed(title="📅 7-Day Work Summary (Admin)", description="\n".join(desc_lines), color=discord.Color.gold())
         embed.add_field(name="🏦 Total Payroll", value=f"${total_pay:,.2f}", inline=False)
         embed.set_footer(text=f"Hourly Rate: ${HOURLY_PAY}/hr • Period: {start.strftime('%b %d')} → {now.strftime('%b %d')} CT")
-        await interaction.response.send_message(embed=embed, delete_after=ADMIN_AUTO_DELETE_TIME)
+        await send_temp_message(interaction, embed=embed, admin=True)
 
-    # ✅ --- Purge Function ---
     async def purge_func(self, interaction: discord.Interaction):
         embed = discord.Embed(
             title="🧹 Purge Time Data",
@@ -373,7 +375,7 @@ async def on_ready():
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error):
     if isinstance(error, app_commands.CheckFailure):
-        await interaction.response.send_message("❌ You don’t have permission to run this command.", ephemeral=True)
+        await send_temp_message(interaction, content="❌ You don’t have permission to run this command.")
 
 
 # --- Dummy Web Server for Render ---
