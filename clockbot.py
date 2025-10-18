@@ -366,8 +366,8 @@ async def on_ready():
         creator_embed.set_footer(text="© 2025 TimeTracker Bot • Developed with ❤️ using discord.py")
 
         await channel.send(embed=creator_embed)
-        await channel.send("👋 **Time Tracking Panel**", view=ClockButtons(cog))
-        await channel.send("🛠️ **Admin Control Panel**", view=AdminClockButtons(cog))
+        await channel.send("👋 **Time Tracking Panel**", view=ClockButtons(cog), delete_after=60)
+        await channel.send("🛠️ **Admin Control Panel**", view=AdminClockButtons(cog), delete_after=60)
 
 
 @bot.tree.error
