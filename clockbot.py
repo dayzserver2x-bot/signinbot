@@ -13,6 +13,8 @@ from zoneinfo import ZoneInfo
 import csv
 import io
 import os
+import asyncio
+from aiohttp import web
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -346,6 +348,7 @@ async def setup():
 @bot.event
 async def on_ready():
     await setup()
+    bot.loop.create_task(rotate_statuses())  # 🌀 start rotating funny + live statuses
     cog = bot.get_cog("TimeTracker")
     bot.add_view(ClockButtons(cog))
     bot.add_view(AdminClockButtons(cog))
@@ -359,7 +362,7 @@ async def on_ready():
             description=(
                 "Something I created to help track Yall!!! 😘😘😘.\n\n"
                 "**Created by:** <@691108551258800128>\n"
-                "📦 **Version:** 1.0.0\n"
+                "📦 **Version:** 1.5.0\n"
                 "🕓 **Timezone:** Central Time (auto-adjusts for CDT/CST)\n"
                 "💾 **Database:** SQLite (`clockbot.db`)"
             ),
@@ -379,27 +382,47 @@ async def on_app_command_error(interaction: discord.Interaction, error):
 
 
 # --- Dummy Web Server for Render ---
-import asyncio
-from aiohttp import web
-
 async def handle(request):
-    return web.Response(text="✅ TimeTracker bot is running!", status=200)
+    return web.Response(text="Bot is running!")
 
-async def run_web_server():
-    port = int(os.getenv("PORT", 8080))
-    app = web.Application()
-    app.router.add_get("/", handle)
+app = web.Application()
+app.router.add_get("/", handle)
+
+
+# --- 🌀 Funny rotating presence/status ---
+async def rotate_statuses():
+    await bot.wait_until_ready()
+    statuses = [
+        "😴 Calculating how many naps equal a shift...",
+        "🧠 Thinking about time... philosophically ⏳",
+        "🕐 Time is money, but I accept memes 💸",
+        "👀 Watching people forget to clock out...",
+        "💻 Pretending to work since 2025",
+        "⏰ Running on coffee and bad decisions ☕",
+        "🦥 Taking a productivity nap...",
+        "🎭 Acting busy for the admin",
+        "📊 Making up numbers that look impressive",
+        "🧾 Auditing everyone's snack breaks 🍪",
+        "💀 Help, I'm trapped in a database",
+        "🦾 More reliable than your memory",
+        "🌈 Calculating pay in friendship coins 💖",
+        "🐢 Slow and steady clocks the hours",
+        "🪩 Vibing in the time dimension"
+    ]
+
+    while not bot.is_closed():
+        for status in statuses:
+            await bot.change_presence(activity=discord.Game(name=status))
+            await asyncio.sleep(60)  # change every 60 seconds
+
+
+# --- Run Bot + Keep-Alive ---
+async def main():
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", port)
+    site = web.TCPSite(runner, "0.0.0.0", 8080)
     await site.start()
-    print(f"🌐 Web server started on port {port} (Render health check OK)")
-
-async def main():
-    await asyncio.gather(
-        run_web_server(),
-        bot.start(TOKEN)
-    )
+    await bot.start(TOKEN)
 
 if __name__ == "__main__":
     asyncio.run(main())
