@@ -38,8 +38,10 @@ async def send_temp_message(interaction: discord.Interaction, content=None, embe
         await interaction.followup.send(content=content, embed=embed, ephemeral=ephemeral, delete_after=delete_time)
 
 
-# --- Database Setup ---
-conn = sqlite3.connect("clockbot.db")
+# --- Database Setup (Persistent on Render) ---
+DB_PATH = "/data/clockbot.db"
+os.makedirs("/data", exist_ok=True)  # ensure persistent directory exists
+conn = sqlite3.connect(DB_PATH)
 cursor = conn.cursor()
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS time_tracking (
@@ -364,7 +366,7 @@ async def on_ready():
                 "**Created by:** <@691108551258800128>\n"
                 "📦 **Version:** 1.5.0\n"
                 "🕓 **Timezone:** Central Time (auto-adjusts for CDT/CST)\n"
-                "💾 **Database:** SQLite (`clockbot.db`)"
+                "💾 **Database:** SQLite (`/data/clockbot.db`)"
             ),
             color=discord.Color.blurple()
         )
@@ -384,6 +386,7 @@ async def on_app_command_error(interaction: discord.Interaction, error):
 # --- Dummy Web Server for Render ---
 async def handle(request):
     return web.Response(text="Bot is running!")
+
 
 app = web.Application()
 app.router.add_get("/", handle)
@@ -423,6 +426,7 @@ async def main():
     site = web.TCPSite(runner, "0.0.0.0", 8080)
     await site.start()
     await bot.start(TOKEN)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
