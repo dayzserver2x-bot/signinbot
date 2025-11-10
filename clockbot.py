@@ -106,7 +106,7 @@ class AdminClockButtons(discord.ui.View):
             return
         await self.cog.allhours_func(interaction, export=False)
 
-    @discord.ui.button(label="📅 7-Day Report", style=discord.ButtonStyle.secondary, custom_id="persistent_admin_weekly_btn")
+    @discord.ui.button(label="📅 30-Day Report", style=discord.ButtonStyle.secondary, custom_id="persistent_admin_weekly_btn")
     async def weekly_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not is_admin(interaction):
             await send_temp_message(interaction, content="❌ You don’t have permission to use this.", admin=True)
@@ -264,7 +264,7 @@ class TimeTracker(commands.Cog):
 
     async def weeklyreport_func(self, interaction: discord.Interaction):
         now = datetime.now(CENTRAL_TZ)
-        start = now - timedelta(days=7)
+        start = now - timedelta(days=30)
         cursor.execute("SELECT username, clock_in, clock_out FROM time_tracking WHERE clock_out IS NOT NULL")
         rows = cursor.fetchall()
         totals = {}
@@ -339,7 +339,7 @@ async def sync(ctx):
 
 # --- Startup ---
 async def setup():
-    await bot.add_cog(TimeTracker(bot), guild=discord.Object(id=GUILD_ID))
+    await bot.add_cog(TimeTracker(bot))
     print("✅ Cog loaded")
     synced = await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
     print(f"✅ Synced {len(synced)} commands")
