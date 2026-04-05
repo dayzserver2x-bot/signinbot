@@ -10,6 +10,7 @@ from discord import app_commands
 from discord.ext import commands
 
 import sqlite3
+import io
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import re
@@ -528,7 +529,7 @@ class TimeTracker(commands.Cog):
         now = datetime.now(CENTRAL_TZ)
         start_window = now - timedelta(days=30)
 
-        totals: dict[int, dict[str, float | str]] = {}
+        totals: dict[int, dict[str, object]] = {}
 
         # sessions that ended in window
         cursor.execute("SELECT user_id, username, clock_in, clock_out FROM time_tracking WHERE clock_out IS NOT NULL")
@@ -542,9 +543,19 @@ class TimeTracker(commands.Cog):
                 continue
 
             hours = (co - ci).total_seconds() / 3600.0
-            entry = totals.setdefault(int(user_id), {"username": username, "hours": 0.0})
+            entry = totals.setdefault(
+                int(user_id),
+                {"username": username, "hours": 0.0, "adjustments": 0.0, "sessions": []},
+            )
             entry["username"] = username
             entry["hours"] = float(entry["hours"]) + hours
+            entry["sessions"].append(
+                {
+                    "clock_in": ci,
+                    "clock_out": co,
+                    "hours": hours,
+                }
+            )
 
         # adjustments created in window
         cursor.execute("SELECT user_id, username, hours_delta, created_at FROM adjustments")
@@ -557,33 +568,91 @@ class TimeTracker(commands.Cog):
             except Exception:
                 continue
 
-            entry = totals.setdefault(int(user_id), {"username": username, "hours": 0.0})
+            entry = totals.setdefault(
+                int(user_id),
+                {"username": username, "hours": 0.0, "adjustments": 0.0, "sessions": []},
+            )
             entry["username"] = username
             entry["hours"] = float(entry["hours"]) + delta_f
+            entry["adjustments"] = float(entry["adjustments"]) + delta_f
 
         if not totals:
             await send_temp_message(interaction, content="❌ No work activity in the past 30 days.", admin=True)
             return
 
+        sorted_entries = sorted(totals.values(), key=lambda x: float(x["hours"]), reverse=True)
+
         desc_lines = []
         total_pay = 0.0
+        txt_lines = [
+            "30-DAY WORK REPORT",
+            f"Generated: {now.strftime('%Y-%m-%d %I:%M %p %Z')}",
+            f"Period: {start_window.strftime('%Y-%m-%d %I:%M %p %Z')} -> {now.strftime('%Y-%m-%d %I:%M %p %Z')}",
+            f"Hourly Rate: ${HOURLY_PAY:,.2f}/hr",
+            "",
+            "SUMMARY",
+            "-------",
+        ]
 
-        for e in sorted(totals.values(), key=lambda x: float(x["hours"]), reverse=True):
+        for e in sorted_entries:
             h = float(e["hours"])
             pay = h * HOURLY_PAY
             total_pay += pay
-            desc_lines.append(f"**{e['username']}** — {h:.2f}h • 💰 ${pay:,.2f}")
+            adj = float(e["adjustments"])
+            adj_text = f" • adj {adj:+.2f}h" if abs(adj) > 1e-9 else ""
+            desc_lines.append(f"**{e['username']}** — {h:.2f}h • 💰 ${pay:,.2f}{adj_text}")
+            txt_lines.append(f"{e['username']} — {h:.2f}h — ${pay:,.2f}{' — Adjustments ' + format(adj, '+.2f') + 'h' if abs(adj) > 1e-9 else ''}")
 
-        embed = discord.Embed(
+        txt_lines.extend([
+            "",
+            f"TOTAL PAYROLL: ${total_pay:,.2f}",
+            "",
+            "SESSION DETAILS",
+            "---------------",
+        ])
+
+        for e in sorted_entries:
+            txt_lines.append("")
+            txt_lines.append(f"{e['username']}")
+            txt_lines.append("-" * max(12, len(str(e["username"]))))
+
+            adj = float(e["adjustments"])
+            if abs(adj) > 1e-9:
+                txt_lines.append(f"Manual adjustments in this window: {adj:+.2f}h")
+                txt_lines.append("")
+
+            session_rows = sorted(e["sessions"], key=lambda item: item["clock_in"])
+            if session_rows:
+                for session in session_rows:
+                    ci = session["clock_in"]
+                    co = session["clock_out"]
+                    hours = float(session["hours"])
+                    txt_lines.append(
+                        f"In: {ci.strftime('%b %d, %Y %I:%M %p %Z')} | "
+                        f"Out: {co.strftime('%b %d, %Y %I:%M %p %Z')} | "
+                        f"Hours: {hours:.2f}"
+                    )
+            else:
+                txt_lines.append("No completed clock-in / clock-out sessions in this window.")
+
+        summary_embed = discord.Embed(
             title="📅 30-Day Work Summary (Admin)",
             description="\n".join(desc_lines)[:4000],
             color=discord.Color.gold(),
         )
-        embed.add_field(name="🏦 Total Payroll", value=f"${total_pay:,.2f}", inline=False)
-        embed.set_footer(
+        summary_embed.add_field(name="🏦 Total Payroll", value=f"${total_pay:,.2f}", inline=False)
+        summary_embed.set_footer(
             text=f"Hourly Rate: ${HOURLY_PAY}/hr • Includes adjustments • Period: {start_window.strftime('%b %d')} → {now.strftime('%b %d')} CT"
         )
-        await send_temp_message(interaction, embed=embed, admin=True)
+        await send_temp_message(interaction, embed=summary_embed, admin=True)
+
+        report_bytes = io.BytesIO("\n".join(txt_lines).encode("utf-8"))
+        report_file = discord.File(report_bytes, filename=f"30_day_report_{now.strftime('%Y%m%d_%H%M%S')}.txt")
+        await interaction.followup.send(
+            content="📝 Attached is the full 30-day sign-in/sign-out report.",
+            file=report_file,
+            delete_after=ADMIN_AUTO_DELETE_TIME,
+        )
 
     async def purge_func(self, interaction: discord.Interaction):
         embed = discord.Embed(
