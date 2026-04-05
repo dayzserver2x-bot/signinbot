@@ -545,7 +545,13 @@ class TimeTracker(commands.Cog):
             hours = (co - ci).total_seconds() / 3600.0
             entry = totals.setdefault(
                 int(user_id),
-                {"username": username, "hours": 0.0, "adjustments": 0.0, "sessions": []},
+                {
+                    "username": username,
+                    "hours": 0.0,
+                    "adjustments": 0.0,
+                    "sessions": [],
+                    "days_worked": set(),
+                },
             )
             entry["username"] = username
             entry["hours"] = float(entry["hours"]) + hours
@@ -556,6 +562,7 @@ class TimeTracker(commands.Cog):
                     "hours": hours,
                 }
             )
+            entry["days_worked"].add(ci.date().isoformat())
 
         # adjustments created in window
         cursor.execute("SELECT user_id, username, hours_delta, created_at FROM adjustments")
@@ -570,7 +577,13 @@ class TimeTracker(commands.Cog):
 
             entry = totals.setdefault(
                 int(user_id),
-                {"username": username, "hours": 0.0, "adjustments": 0.0, "sessions": []},
+                {
+                    "username": username,
+                    "hours": 0.0,
+                    "adjustments": 0.0,
+                    "sessions": [],
+                    "days_worked": set(),
+                },
             )
             entry["username"] = username
             entry["hours"] = float(entry["hours"]) + delta_f
@@ -599,9 +612,16 @@ class TimeTracker(commands.Cog):
             pay = h * HOURLY_PAY
             total_pay += pay
             adj = float(e["adjustments"])
+            session_count = len(e["sessions"])
+            days_worked = len(e["days_worked"])
             adj_text = f" • adj {adj:+.2f}h" if abs(adj) > 1e-9 else ""
-            desc_lines.append(f"**{e['username']}** — {h:.2f}h • 💰 ${pay:,.2f}{adj_text}")
-            txt_lines.append(f"{e['username']} — {h:.2f}h — ${pay:,.2f}{' — Adjustments ' + format(adj, '+.2f') + 'h' if abs(adj) > 1e-9 else ''}")
+            desc_lines.append(
+                f"**{e['username']}** — {h:.2f}h • {session_count} clock-ins • {days_worked} day(s) • 💰 ${pay:,.2f}{adj_text}"
+            )
+            txt_lines.append(
+                f"{e['username']} — {h:.2f}h — {session_count} clock-ins — {days_worked} day(s) — ${pay:,.2f}"
+                f"{' — Adjustments ' + format(adj, '+.2f') + 'h' if abs(adj) > 1e-9 else ''}"
+            )
 
         txt_lines.extend([
             "",
@@ -615,44 +635,67 @@ class TimeTracker(commands.Cog):
             txt_lines.append("")
             txt_lines.append(f"{e['username']}")
             txt_lines.append("-" * max(12, len(str(e["username"]))))
+            txt_lines.append(f"Days worked: {len(e['days_worked'])}")
+            txt_lines.append(f"Clock-ins: {len(e['sessions'])}")
 
             adj = float(e["adjustments"])
             if abs(adj) > 1e-9:
                 txt_lines.append(f"Manual adjustments in this window: {adj:+.2f}h")
-                txt_lines.append("")
+            txt_lines.append("")
 
             session_rows = sorted(e["sessions"], key=lambda item: item["clock_in"])
             if session_rows:
+                current_day = None
                 for session in session_rows:
                     ci = session["clock_in"]
                     co = session["clock_out"]
                     hours = float(session["hours"])
+                    day_label = ci.strftime('%A, %b %d, %Y')
+                    if day_label != current_day:
+                        if current_day is not None:
+                            txt_lines.append("")
+                        txt_lines.append(day_label)
+                        txt_lines.append("~" * len(day_label))
+                        current_day = day_label
                     txt_lines.append(
-                        f"In: {ci.strftime('%b %d, %Y %I:%M %p %Z')} | "
-                        f"Out: {co.strftime('%b %d, %Y %I:%M %p %Z')} | "
+                        f"In: {ci.strftime('%I:%M %p %Z')} | "
+                        f"Out: {co.strftime('%I:%M %p %Z')} | "
                         f"Hours: {hours:.2f}"
                     )
             else:
                 txt_lines.append("No completed clock-in / clock-out sessions in this window.")
 
+        summary_text = "\n".join(desc_lines)
+        if len(summary_text) > 4000:
+            summary_text = summary_text[:3997] + "..."
+
         summary_embed = discord.Embed(
             title="📅 30-Day Work Summary (Admin)",
-            description="\n".join(desc_lines)[:4000],
+            description=summary_text,
             color=discord.Color.gold(),
         )
         summary_embed.add_field(name="🏦 Total Payroll", value=f"${total_pay:,.2f}", inline=False)
         summary_embed.set_footer(
             text=f"Hourly Rate: ${HOURLY_PAY}/hr • Includes adjustments • Period: {start_window.strftime('%b %d')} → {now.strftime('%b %d')} CT"
         )
-        await send_temp_message(interaction, embed=summary_embed, admin=True)
 
         report_bytes = io.BytesIO("\n".join(txt_lines).encode("utf-8"))
         report_file = discord.File(report_bytes, filename=f"30_day_report_{now.strftime('%Y%m%d_%H%M%S')}.txt")
-        await interaction.followup.send(
-            content="📝 Attached is the full 30-day sign-in/sign-out report.",
-            file=report_file,
-            delete_after=ADMIN_AUTO_DELETE_TIME,
-        )
+
+        if not interaction.response.is_done():
+            await interaction.response.send_message(
+                content="📝 Summary now shows clock-ins and days worked. Attached .txt has every sign-in/sign-out time.",
+                embed=summary_embed,
+                file=report_file,
+                delete_after=ADMIN_AUTO_DELETE_TIME,
+            )
+        else:
+            await interaction.followup.send(
+                content="📝 Summary now shows clock-ins and days worked. Attached .txt has every sign-in/sign-out time.",
+                embed=summary_embed,
+                file=report_file,
+                delete_after=ADMIN_AUTO_DELETE_TIME,
+            )
 
     async def purge_func(self, interaction: discord.Interaction):
         embed = discord.Embed(
