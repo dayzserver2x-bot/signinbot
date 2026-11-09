@@ -36,6 +36,13 @@ CENTRAL_TZ = ZoneInfo("America/Chicago")
 AUTO_DELETE_TIME = 60
 ADMIN_AUTO_DELETE_TIME = 60
 HOURLY_PAY = 3000
+SERVER_NAMES = [
+    name.strip()
+    for name in os.getenv("TRADER_SERVER_NAMES", "Server 1,Server 2").split(",")
+    if name.strip()
+][:25]
+if len(SERVER_NAMES) < 2:
+    SERVER_NAMES = ["Server 1", "Server 2"]
 
 
 # -------------------- Utility --------------------
@@ -84,11 +91,19 @@ cursor.execute(
         user_id INTEGER,
         username TEXT,
         clock_in TEXT,
-        clock_out TEXT
+        clock_out TEXT,
+        server_name TEXT NOT NULL DEFAULT 'Server 1'
     )
 """
 )
 conn.commit()
+
+# Add the server column to existing databases without changing their records.
+cursor.execute("PRAGMA table_info(time_tracking)")
+time_tracking_columns = {row[1] for row in cursor.fetchall()}
+if "server_name" not in time_tracking_columns:
+    cursor.execute("ALTER TABLE time_tracking ADD COLUMN server_name TEXT NOT NULL DEFAULT 'Server 1'")
+    conn.commit()
 
 cursor.execute(
     """
@@ -209,6 +224,28 @@ class AdjustHoursModal(discord.ui.Modal, title="➕➖ Adjust Hours"):
 
 
 # -------------------- Views --------------------
+class ClockInServerSelect(discord.ui.View):
+    def __init__(self, cog: "TimeTracker"):
+        super().__init__(timeout=120)
+        self.cog = cog
+        options = [
+            discord.SelectOption(label=name[:100], value=name, description="Track this shift under this server")
+            for name in SERVER_NAMES
+        ]
+        select = discord.ui.Select(
+            placeholder="Choose the server you are opening the trader for",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+        async def on_select(interaction: discord.Interaction):
+            await self.cog.clockin_func(interaction, select.values[0])
+
+        select.callback = on_select
+        self.add_item(select)
+
+
 class ClockButtons(discord.ui.View):
     def __init__(self, cog: "TimeTracker"):
         super().__init__(timeout=None)
@@ -216,7 +253,7 @@ class ClockButtons(discord.ui.View):
 
     @discord.ui.button(label="🟢 Clock In", style=discord.ButtonStyle.success, custom_id="persistent_clock_in_btn")
     async def clock_in_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.cog.clockin_func(interaction)
+        await self.cog.choose_server_func(interaction)
 
     @discord.ui.button(label="🔴 Clock Out", style=discord.ButtonStyle.danger, custom_id="persistent_clock_out_btn")
     async def clock_out_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -318,11 +355,22 @@ class TimeTracker(commands.Cog):
     # ---- User Commands ----
     @app_commands.command(name="clockin", description="Clock in to start tracking time.")
     async def clockin(self, interaction: discord.Interaction):
-        await self.clockin_func(interaction)
+        await self.choose_server_func(interaction)
 
-    async def clockin_func(self, interaction: discord.Interaction):
+    async def choose_server_func(self, interaction: discord.Interaction):
+        await interaction.response.send_message(
+            "Choose which server you are opening the trader for before you sign in:",
+            view=ClockInServerSelect(self),
+            ephemeral=True,
+        )
+
+    async def clockin_func(self, interaction: discord.Interaction, server_name: str):
         user_id = interaction.user.id
         username = str(interaction.user)
+
+        if server_name not in SERVER_NAMES:
+            await send_temp_message(interaction, content="❌ Choose one of the listed servers.")
+            return
 
         cursor.execute(
             "SELECT 1 FROM time_tracking WHERE user_id = ? AND clock_out IS NULL",
@@ -334,14 +382,14 @@ class TimeTracker(commands.Cog):
 
         clock_in_time = datetime.now(CENTRAL_TZ).isoformat()
         cursor.execute(
-            "INSERT INTO time_tracking (user_id, username, clock_in, clock_out) VALUES (?, ?, ?, NULL)",
-            (user_id, username, clock_in_time),
+            "INSERT INTO time_tracking (user_id, username, clock_in, clock_out, server_name) VALUES (?, ?, ?, NULL, ?)",
+            (user_id, username, clock_in_time, server_name),
         )
         conn.commit()
 
         await send_temp_message(
             interaction,
-            content=f"✅ Clocked in at {datetime.now(CENTRAL_TZ).strftime('%I:%M %p %Z')}.",
+            content=f"✅ Signed in for **{server_name}** at {datetime.now(CENTRAL_TZ).strftime('%I:%M %p %Z')}. Your pay rate is ${HOURLY_PAY:,.2f}/hr on either server.",
         )
 
     @app_commands.command(name="clockout", description="Clock out and stop tracking time.")
@@ -352,7 +400,7 @@ class TimeTracker(commands.Cog):
         user_id = interaction.user.id
 
         cursor.execute(
-            "SELECT clock_in FROM time_tracking WHERE user_id = ? AND clock_out IS NULL",
+            "SELECT clock_in, server_name FROM time_tracking WHERE user_id = ? AND clock_out IS NULL",
             (user_id,),
         )
         row = cursor.fetchone()
@@ -361,6 +409,7 @@ class TimeTracker(commands.Cog):
             return
 
         clock_in_time = datetime.fromisoformat(row[0]).astimezone(CENTRAL_TZ)
+        server_name = row[1]
         clock_out_time = datetime.now(CENTRAL_TZ)
 
         cursor.execute(
@@ -372,7 +421,7 @@ class TimeTracker(commands.Cog):
         hours = (clock_out_time - clock_in_time).total_seconds() / 3600.0
         await send_temp_message(
             interaction,
-            content=f"🕒 Clocked out at {clock_out_time.strftime('%I:%M %p %Z')}. You worked for {hours:.2f} hours.",
+            content=f"🕒 Signed out of **{server_name}** at {clock_out_time.strftime('%I:%M %p %Z')}. You worked {hours:.2f} hours.",
         )
 
     @app_commands.command(name="status", description="Check your current clock-in status.")
@@ -383,7 +432,7 @@ class TimeTracker(commands.Cog):
         user_id = interaction.user.id
 
         cursor.execute(
-            "SELECT clock_in FROM time_tracking WHERE user_id = ? AND clock_out IS NULL",
+            "SELECT clock_in, server_name FROM time_tracking WHERE user_id = ? AND clock_out IS NULL",
             (user_id,),
         )
         row = cursor.fetchone()
@@ -392,7 +441,7 @@ class TimeTracker(commands.Cog):
             t = datetime.fromisoformat(row[0]).astimezone(CENTRAL_TZ)
             await send_temp_message(
                 interaction,
-                content=f"✅ You are clocked in since {t.strftime('%I:%M %p %Z')}.",
+                content=f"✅ You are signed in for **{row[1]}** since {t.strftime('%I:%M %p %Z')}.",
             )
             return
 
@@ -470,24 +519,24 @@ class TimeTracker(commands.Cog):
 
     # ---- Admin Button Actions ----
     async def clockstatus_func(self, interaction: discord.Interaction):
-        cursor.execute("SELECT username, clock_in FROM time_tracking WHERE clock_out IS NULL")
+        cursor.execute("SELECT username, clock_in, server_name FROM time_tracking WHERE clock_out IS NULL")
         rows = cursor.fetchall()
         if not rows:
             await send_temp_message(interaction, content="✅ No one is currently clocked in.", admin=True)
             return
 
         embed = discord.Embed(title="👥 Currently Clocked In", color=discord.Color.green())
-        for username, clock_in in rows:
+        for username, clock_in, server_name in rows:
             t = datetime.fromisoformat(clock_in).astimezone(CENTRAL_TZ)
-            embed.add_field(name=username, value=f"Since {t.strftime('%I:%M %p %Z')}", inline=False)
+            embed.add_field(name=username, value=f"{server_name} • Since {t.strftime('%I:%M %p %Z')}", inline=False)
         await send_temp_message(interaction, embed=embed, admin=True)
 
     async def allhours_func(self, interaction: discord.Interaction):
         totals: dict[int, dict[str, float | str]] = {}
 
         # completed sessions
-        cursor.execute("SELECT user_id, username, clock_in, clock_out FROM time_tracking WHERE clock_out IS NOT NULL")
-        for user_id, username, clock_in, clock_out in cursor.fetchall():
+        cursor.execute("SELECT user_id, username, clock_in, clock_out, server_name FROM time_tracking WHERE clock_out IS NOT NULL")
+        for user_id, username, clock_in, clock_out, server_name in cursor.fetchall():
             try:
                 start = datetime.fromisoformat(clock_in).astimezone(CENTRAL_TZ)
                 end = datetime.fromisoformat(clock_out).astimezone(CENTRAL_TZ)
@@ -532,8 +581,8 @@ class TimeTracker(commands.Cog):
         totals: dict[int, dict[str, object]] = {}
 
         # sessions that ended in window
-        cursor.execute("SELECT user_id, username, clock_in, clock_out FROM time_tracking WHERE clock_out IS NOT NULL")
-        for user_id, username, clock_in, clock_out in cursor.fetchall():
+        cursor.execute("SELECT user_id, username, clock_in, clock_out, server_name FROM time_tracking WHERE clock_out IS NOT NULL")
+        for user_id, username, clock_in, clock_out, server_name in cursor.fetchall():
             try:
                 ci = datetime.fromisoformat(clock_in).astimezone(CENTRAL_TZ)
                 co = datetime.fromisoformat(clock_out).astimezone(CENTRAL_TZ)
@@ -560,6 +609,7 @@ class TimeTracker(commands.Cog):
                     "clock_in": ci,
                     "clock_out": co,
                     "hours": hours,
+                    "server_name": server_name,
                 }
             )
             entry["days_worked"].add(ci.date().isoformat())
@@ -658,7 +708,7 @@ class TimeTracker(commands.Cog):
                         txt_lines.append("~" * len(day_label))
                         current_day = day_label
                     txt_lines.append(
-                        f"In: {ci.strftime('%I:%M %p %Z')} | "
+                        f"Server: {session['server_name']} | In: {ci.strftime('%I:%M %p %Z')} | "
                         f"Out: {co.strftime('%I:%M %p %Z')} | "
                         f"Hours: {hours:.2f}"
                     )
